@@ -33,6 +33,7 @@ LOGGING = {
             "formatter": "standard",
         },
         "console": {"class": "logging.StreamHandler", "formatter": "short"},
+        "null": {"class": "logging.NullHandler"},
     },
     "loggers": {
         "": {
@@ -48,5 +49,9 @@ LOGGING = {
             "level": LOGGING_LEVEL,
             "handlers": [DEFAULT_LOGGING_HANDLER],
         },
+        # graphql-core logs every resolver exception with its message, which
+        # can quote the request; openIMIS.views logs each error instead.
+        "graphql.execution.utils": {"handlers": ["null"], "propagate": False},
+        "graphql.execution.executor": {"handlers": ["null"], "propagate": False},
     },
 }

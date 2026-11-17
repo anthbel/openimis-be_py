@@ -6,9 +6,11 @@ logger = logging.getLogger(__name__)
 try:
     import sentry_sdk
     from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.logging import ignore_logger
 except ModuleNotFoundError:
     sentry_sdk = None
     DjangoIntegration = None
+    ignore_logger = None
     logger.error(
         "sentry_sdk has to be installed to use Sentry. Run `pip install --upgrade sentry_sdk` to install it."
     )
@@ -59,36 +61,63 @@ def sanitize(value):
     return value
 
 
+def _drop_request_body(event):
+    request = event.get("request")
+    if isinstance(request, dict):
+        request.pop("data", None)
+        request.pop("query_string", None)
+    return event
+
+
+def _scrub_messages(event):
+    """Keep exception types and stack frames; drop every message and frame locals."""
+    for exc in (event.get("exception") or {}).get("values") or []:
+        exc.pop("value", None)
+        for frame in (exc.get("stacktrace") or {}).get("frames") or []:
+            frame.pop("vars", None)
+    if "logentry" in event or "message" in event:
+        event.pop("message", None)
+        event["logentry"] = {"message": "Log record from %s" % event.get("logger", "an unnamed logger")}
+    for breadcrumb in (event.get("breadcrumbs") or {}).get("values") or []:
+        breadcrumb.pop("message", None)
+        breadcrumb.pop("data", None)
+    return event
+
+
 def before_send(event, hint):
+    """Send an event without request content or messages; on any failure, drop it."""
     try:
-        # Nettoyage global (clé principale)
-        event = sanitize(event)
-
-        # Cas spécifique : exception message
-        if "exception" in event:
-            for exc in event["exception"].get("values", []):
-                if "value" in exc:
-                    exc["value"] = sanitize(exc["value"])
-
-                # stacktrace
-                if "stacktrace" in exc:
-                    for frame in exc["stacktrace"].get("frames", []):
-                        if "vars" in frame:
-                            frame["vars"] = sanitize(frame["vars"])
-
-        return event
-
+        return _scrub_messages(_drop_request_body(sanitize(event)))
     except Exception:
-        # En cas de bug dans le scrubber, ne jamais bloquer Sentry
-        return event
+        return None
 
+
+def before_send_transaction(event, hint):
+    """Drop the request body from a transaction; on any failure, drop the transaction."""
+    try:
+        return _drop_request_body(event)
+    except Exception:
+        return None
+
+
+# Request bodies and frame locals can hold person data and biometric samples:
+# neither is collected, whatever the DSN.
 init_kwargs = {
     "dsn": SENTRY_DSN,
     "integrations": [DjangoIntegration()] if DjangoIntegration else [],
     "traces_sample_rate": float(SENTRY_SAMPLE_RATE),
     "send_default_pii": False,
+    "max_request_body_size": "never",
+    "include_local_variables": False,
     "before_send": before_send,
+    "before_send_transaction": before_send_transaction,
 }
+
+# graphql-core logs every resolver exception, client refusals included, with
+# its message; openIMIS.views reports the unexpected ones itself.
+if ignore_logger is not None:
+    ignore_logger("graphql.execution.utils")
+    ignore_logger("graphql.execution.executor")
 
 if HAS_SCRUBBER:
     init_kwargs["event_scrubber"] = EventScrubber(

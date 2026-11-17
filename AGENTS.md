@@ -459,6 +459,42 @@ installed (it is optional, see `sentry-requirements.txt`) or when no DSN is
 configured. Both also `ignore_logger(__name__)` so Sentry's logging integration
 does not raise a second event for the same exception.
 
+What reaches Sentry is set in `settings/sentry.py`:
+
+- `max_request_body_size="never"`, and `before_send` and `before_send_transaction`
+  drop `request.data` and `request.query_string`: no request body or query string;
+- `include_local_variables=False`, and `before_send` drops frame `vars`;
+- `before_send` keeps an exception's type and stack frames but drops its value,
+  replaces log messages with `Log record from <logger>`, and drops breadcrumb
+  messages and data; an event it cannot scrub is not sent;
+- `send_default_pii=False`; the GraphQL view puts no body in span data;
+- graphql-core's `graphql.execution.utils` and `graphql.execution.executor`
+  loggers are ignored, so a client refusal never becomes an event.
+
+### Logging GraphQL errors
+
+graphql-core's `graphql.execution.utils` and `graphql.execution.executor` loggers
+go to a null handler without propagating (`settings/logging.py`): they log every
+resolver exception with its message. `OpenIMISGraphQLView` logs each error once,
+under an error id that the response carries in `extensions.errorId`:
+
+- a client error at INFO, as its class, `line:column` and response path, never
+  its message;
+- an unexpected error at ERROR, with the same fields and its traceback, which
+  includes the exception's message.
+
+A resolver refusal is answered with its message, which can quote the client's
+input. Errors that graphql-core states with request content are answered without
+it (`openIMIS/gql_request_content.py`):
+
+- a syntax error keeps its position and the kind of the offending token, not
+  the token's text or the highlighted source line;
+- an invalid argument, variable or default value keeps the name, the expected
+  type and the field path, not the value;
+- a variable whose scalar parser raises (`int("abc")`, a malformed UUID) is a
+  `BAD_REQUEST` client error, `Variable "$x" got invalid value.`, not an
+  unexpected error.
+
 `django.test.TestCase` forces `DEBUG=False`, so sanitisation is active in tests.
 Pass `debug=True` explicitly when a test needs the raw message.
 

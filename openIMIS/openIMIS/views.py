@@ -2,7 +2,9 @@ from django.db import connection, transaction
 from django.http import HttpResponseNotAllowed, HttpResponse
 from django.http.response import HttpResponseBadRequest
 from .dataloaders import get_dataloaders
+from .gql_request_content import invalid_variable_error, without_request_content
 from . import tracer
+from graphql.error import GraphQLError
 from graphql.execution import ExecutionResult
 
 from graphene_django.constants import MUTATION_ERRORS_FLAG
@@ -11,6 +13,7 @@ from graphql_jwt.exceptions import JSONWebTokenError
 from graphene_django.settings import graphene_settings
 from graphene_django.views import GraphQLView as BaseGraphQLView, HttpError
 import logging
+import uuid
 
 try:
     # core owns the error taxonomy; an older core simply keeps graphene's
@@ -35,6 +38,26 @@ except ImportError:  # sentry_sdk is optional (see sentry-requirements.txt)
         return None
 
 logger = logging.getLogger(__name__)
+
+
+def _set_error_id(error):
+    """Tag the error with the id its log line and its response both carry."""
+    error.openimis_error_id = uuid.uuid4().hex
+    return error
+
+
+def _error_id(error):
+    return getattr(error, "openimis_error_id", None)
+
+
+def _error_position(error):
+    """Where an error sits in the request: ``line:column`` and the response path."""
+    locations = getattr(error, "locations", None) or []
+    path = getattr(error, "path", None) or []
+    return (
+        ",".join("{}:{}".format(loc.line, loc.column) for loc in locations) or "-",
+        ".".join(str(p) for p in path) or "-",
+    )
 
 
 def has_jwt_error(errors):
@@ -103,20 +126,37 @@ class GraphQLView(BaseGraphQLView):
         unexpected exception reaches them as its raw string.
         """
         if format_openimis_error is None:
-            return BaseGraphQLView.format_error(error)
-        return format_openimis_error(error)
+            formatted = BaseGraphQLView.format_error(error)
+        else:
+            formatted = format_openimis_error(error)
+        if _error_id(error):
+            formatted["extensions"] = {
+                **(formatted.get("extensions") or {}),
+                "errorId": _error_id(error),
+            }
+        return formatted
 
     def get_context(self, request):
         request.dataloaders = get_dataloaders()
         return request
 
     def parse_body(self, request):
-        with tracer.trace(op="GraphQLView.parse_body") as span:
-            request_json = super().parse_body(request)
-            span.set_data("Body", request_json)
-            return request_json
+        with tracer.trace(op="GraphQLView.parse_body"):
+            return super().parse_body(request)
 
     def execute_graphql_request(
+        self, request, data, query, variables, operation_name, show_graphiql=False
+    ):
+        result = self._execute_graphql_request(
+            request, data, query, variables, operation_name, show_graphiql
+        )
+        if result is not None and result.errors:
+            result.errors = [
+                _set_error_id(without_request_content(e)) for e in result.errors
+            ]
+        return result
+
+    def _execute_graphql_request(
         self, request, data, query, variables, operation_name, show_graphiql=False
     ):
         if not request or getattr(request, "content_type", "") != "application/json":
@@ -180,6 +220,8 @@ class GraphQLView(BaseGraphQLView):
             with tracer.trace(op="document.execute"):
                 return document.execute(**options)
         except Exception as e:
+            if not isinstance(e, GraphQLError):
+                e = invalid_variable_error(document, variables, operation_name) or e
             return ExecutionResult(errors=[e], invalid=True)
 
 
@@ -204,24 +246,32 @@ class OpenIMISGraphQLView(GraphQLView):
         result, so they never propagate and Sentry's Django integration never
         sees them: they have to be reported from here.
 
+        Each error is logged once, here, under the id its response carries;
+        graphql-core's own loggers are silenced (settings/logging.py).
+
         Only errors whose message is withheld from the client are reported. The
         rest -- an expired session, a permission denial, a malformed query --
         are the API behaving as designed; reporting those buried the actionable
-        failures among them. They stay at INFO in the application log.
+        failures among them. They stay at INFO in the application log, as their
+        class and position only: their message can quote the request.
         """
         for error in errors:
             original = getattr(error, "original_error", None) or error
+            location, path = _error_position(error)
 
             if is_client_safe is not None and is_client_safe(error):
-                logger.info("GraphQL client error: %s", original)
+                logger.info(
+                    "GraphQL client error %s: %s at %s, path %s",
+                    _error_id(error), type(original).__name__, location, path,
+                )
                 continue
 
             # exc_info regardless of DEBUG: for an error whose message the
             # client never saw, this log line is the only record of what
             # actually happened.
             logger.error(
-                "Unexpected GraphQL error: %s",
-                type(original).__name__,
+                "Unexpected GraphQL error %s: %s at %s, path %s",
+                _error_id(error), type(original).__name__, location, path,
                 exc_info=original,
             )
             capture_exception(original)
