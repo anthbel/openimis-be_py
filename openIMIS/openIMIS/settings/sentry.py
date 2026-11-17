@@ -59,10 +59,17 @@ def sanitize(value):
     return value
 
 
+def _drop_request_body(event):
+    request = event.get("request")
+    if isinstance(request, dict):
+        request.pop("data", None)
+    return event
+
+
 def before_send(event, hint):
     try:
         # Nettoyage global (clé principale)
-        event = sanitize(event)
+        event = _drop_request_body(sanitize(event))
 
         # Cas spécifique : exception message
         if "exception" in event:
@@ -82,12 +89,26 @@ def before_send(event, hint):
         # En cas de bug dans le scrubber, ne jamais bloquer Sentry
         return event
 
+
+def before_send_transaction(event, hint):
+    """Drop the request body from a transaction; on any failure, drop the transaction."""
+    try:
+        return _drop_request_body(event)
+    except Exception:
+        return None
+
+
+# Request bodies and frame locals can hold person data and biometric samples:
+# neither is collected, whatever the DSN.
 init_kwargs = {
     "dsn": SENTRY_DSN,
     "integrations": [DjangoIntegration()] if DjangoIntegration else [],
     "traces_sample_rate": float(SENTRY_SAMPLE_RATE),
     "send_default_pii": False,
+    "max_request_body_size": "never",
+    "include_local_variables": False,
     "before_send": before_send,
+    "before_send_transaction": before_send_transaction,
 }
 
 if HAS_SCRUBBER:

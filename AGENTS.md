@@ -459,6 +459,26 @@ installed (it is optional, see `sentry-requirements.txt`) or when no DSN is
 configured. Both also `ignore_logger(__name__)` so Sentry's logging integration
 does not raise a second event for the same exception.
 
+Sentry never receives request content (`settings/sentry.py`): no request body
+(`max_request_body_size="never"`, and `before_send` and
+`before_send_transaction` drop `request.data`), no frame locals
+(`include_local_variables=False`), no PII (`send_default_pii=False`), and the
+GraphQL view puts no body in span data.
+
+### Client errors and request content
+
+A GraphQL client error is logged at INFO as its class, its `line:column` and its
+response path, never its message. Errors that graphql-core states with request
+content are answered without it (`openIMIS/gql_request_content.py`):
+
+- a syntax error keeps its position and the kind of the offending token, not
+  the token's text or the highlighted source line;
+- an invalid argument, variable or default value keeps the name, the expected
+  type and the field path, not the value;
+- a variable whose scalar parser raises (`int("abc")`, a malformed UUID) is a
+  `BAD_REQUEST` client error, `Variable "$x" got invalid value.`, not an
+  unexpected error.
+
 `django.test.TestCase` forces `DEBUG=False`, so sanitisation is active in tests.
 Pass `debug=True` explicitly when a test needs the raw message.
 

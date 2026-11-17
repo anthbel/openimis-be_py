@@ -35,7 +35,7 @@
 | OPENIMIS_CONF_JSON | String | Define the path for the openimis config file. If not set the default config from the root folder will be taken. |
 | DB_QUERIES_LOG_FILE | String | Define the path of the file to save the database queries. Default is db-queries.log |
 | DEBUG_LOG_FILE | String | Define the path of the file to save the debug log. Default is debug.log |
-| SENTRY_DSN | String | Set the unique Sentry DSN. This can be obtained from your Sentry account dashboard |
+| SENTRY_DSN | String | Set the unique Sentry DSN. This can be obtained from your Sentry account dashboard. Sentry never receives request bodies, the GraphQL body as span data, or the local variables of stack frames, whatever the DSN. |
 | SENTRY_SAMPLE_RATE | 0-1 | This configuration allows you to to control the rate at which traces are collected. Values are between 0 and 1. 0 means no traces will be collected (tracing is disabled). 1 means traces will be collected for every request. Any value between 0 and 1 represents the probability of capturing trace. For instance, a value 0.3 means that approximately 30% of requests will have traces collected. |
 | IS_SENTRY_ENABLED | True, False | Defines if the Sentry error tracking and monitoring functionality is enabled or disabled. |
 | SITE_URL | String | Define the base url. This is used to create links in FHIR module |
