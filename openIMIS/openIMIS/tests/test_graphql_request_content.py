@@ -44,6 +44,7 @@ class GraphQLRequestContentTest(TestCase):
                 f"/{SITE_ROOT()}graphql",
                 data=json.dumps(body),
                 content_type="application/json",
+                secure=True,
             )
         return response, records, capture_exception
 
@@ -71,14 +72,17 @@ class GraphQLRequestContentTest(TestCase):
         ]
         self.assertEqual(len(client_errors), 1, client_errors)
         self.assertIn(f"at {expected_location}", client_errors[0])
-        return client_errors[0]
+        self.assertIn(error["extensions"]["errorId"], client_errors[0])
+        return client_errors[0], error["extensions"]["errorId"]
 
     def test_syntax_error_omits_source_line_and_token_value(self):
         query = "query { __typename " + _graphql_string(CANARY) + " }"
-        logged = self._assert_client_error(
+        logged, error_id = self._assert_client_error(
             query, None, "Syntax Error GraphQL (1:20) Expected Name, found String", "1:20"
         )
-        self.assertEqual(logged, "GraphQL client error: GraphQLSyntaxError at 1:20, path -")
+        self.assertEqual(
+            logged, f"GraphQL client error {error_id}: GraphQLSyntaxError at 1:20, path -"
+        )
 
     def test_invalid_argument_literal_omits_value(self):
         query = "query { users(first: " + _graphql_string(CANARY) + ") { totalCount } }"

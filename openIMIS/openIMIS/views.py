@@ -13,6 +13,7 @@ from graphql_jwt.exceptions import JSONWebTokenError
 from graphene_django.settings import graphene_settings
 from graphene_django.views import GraphQLView as BaseGraphQLView, HttpError
 import logging
+import uuid
 
 try:
     # core owns the error taxonomy; an older core simply keeps graphene's
@@ -37,6 +38,16 @@ except ImportError:  # sentry_sdk is optional (see sentry-requirements.txt)
         return None
 
 logger = logging.getLogger(__name__)
+
+
+def _set_error_id(error):
+    """Tag the error with the id its log line and its response both carry."""
+    error.openimis_error_id = uuid.uuid4().hex
+    return error
+
+
+def _error_id(error):
+    return getattr(error, "openimis_error_id", None)
 
 
 def _error_position(error):
@@ -115,8 +126,15 @@ class GraphQLView(BaseGraphQLView):
         unexpected exception reaches them as its raw string.
         """
         if format_openimis_error is None:
-            return BaseGraphQLView.format_error(error)
-        return format_openimis_error(error)
+            formatted = BaseGraphQLView.format_error(error)
+        else:
+            formatted = format_openimis_error(error)
+        if _error_id(error):
+            formatted["extensions"] = {
+                **(formatted.get("extensions") or {}),
+                "errorId": _error_id(error),
+            }
+        return formatted
 
     def get_context(self, request):
         request.dataloaders = get_dataloaders()
@@ -133,7 +151,9 @@ class GraphQLView(BaseGraphQLView):
             request, data, query, variables, operation_name, show_graphiql
         )
         if result is not None and result.errors:
-            result.errors = [without_request_content(e) for e in result.errors]
+            result.errors = [
+                _set_error_id(without_request_content(e)) for e in result.errors
+            ]
         return result
 
     def _execute_graphql_request(
@@ -226,6 +246,9 @@ class OpenIMISGraphQLView(GraphQLView):
         result, so they never propagate and Sentry's Django integration never
         sees them: they have to be reported from here.
 
+        Each error is logged once, here, under the id its response carries;
+        graphql-core's own loggers are silenced (settings/logging.py).
+
         Only errors whose message is withheld from the client are reported. The
         rest -- an expired session, a permission denial, a malformed query --
         are the API behaving as designed; reporting those buried the actionable
@@ -234,12 +257,12 @@ class OpenIMISGraphQLView(GraphQLView):
         """
         for error in errors:
             original = getattr(error, "original_error", None) or error
+            location, path = _error_position(error)
 
             if is_client_safe is not None and is_client_safe(error):
-                location, path = _error_position(error)
                 logger.info(
-                    "GraphQL client error: %s at %s, path %s",
-                    type(original).__name__, location, path,
+                    "GraphQL client error %s: %s at %s, path %s",
+                    _error_id(error), type(original).__name__, location, path,
                 )
                 continue
 
@@ -247,8 +270,8 @@ class OpenIMISGraphQLView(GraphQLView):
             # client never saw, this log line is the only record of what
             # actually happened.
             logger.error(
-                "Unexpected GraphQL error: %s",
-                type(original).__name__,
+                "Unexpected GraphQL error %s: %s at %s, path %s",
+                _error_id(error), type(original).__name__, location, path,
                 exc_info=original,
             )
             capture_exception(original)

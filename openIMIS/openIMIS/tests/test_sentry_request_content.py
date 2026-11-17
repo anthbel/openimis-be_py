@@ -64,6 +64,7 @@ class SentryRequestContentTest(TestCase):
             f"/{SITE_ROOT()}graphql",
             data=json.dumps({"query": query, "variables": variables}),
             content_type="application/json",
+            secure=True,
         ).environ
         status = []
 
@@ -71,12 +72,14 @@ class SentryRequestContentTest(TestCase):
             status.append(int(status_line.split()[0]))
 
         # As the test client does: closing the connection would end the test transaction.
+        signals.request_started.disconnect(close_old_connections)
         signals.request_finished.disconnect(close_old_connections)
         try:
             response = WSGIHandler()(environ, start_response)
             b"".join(response)
             response.close()
         finally:
+            signals.request_started.connect(close_old_connections)
             signals.request_finished.connect(close_old_connections)
         return status[0]
 
