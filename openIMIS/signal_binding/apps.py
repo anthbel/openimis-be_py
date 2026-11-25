@@ -36,4 +36,4 @@ class SignalBindingConfig(AppConfig):
                     f"{app_} has no signals submodule"
                 )
         except Exception as exc:
-            logger.debug(f"{app_}: unknown exception occurred during bind_service_signals: {exc}")
+            logger.error(f"{app_}: bind_service_signals failed: {exc}", exc_info=True)

@@ -28,9 +28,11 @@ for app in all_apps:
             bind_signals.append(schema.schema.bind_signals)
             logger.debug(f"{app} signals bound")
     except ModuleNotFoundError as exc:
-        pass
-        # The module doesn't have a schema.py, just skip
-        #logger.debug(f"{app} has no schema module, skipping")
+        # Only an app without its own schema module is skipped; a schema that imports a missing
+        # package stops the startup.
+        if exc.name != f"{app}.schema":
+            raise
+        logger.debug(f"{app} has no schema module, skipping")
 
     try:
         schema_module = __import__(f"{app}.schema")
@@ -42,7 +44,8 @@ for app in all_apps:
         else:
             logger.debug(f"{app} has a schema module but no Mutation class")
     except ModuleNotFoundError as exc:
-        # The module doesn't have a schema.py, just skip
+        if exc.name != f"{app}.schema":
+            raise
         logger.debug(f"{app} has no schema module (mutation), skipping")
 
     for binder in bind_signals:
